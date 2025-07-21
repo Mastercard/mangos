@@ -5,6 +5,11 @@ on:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        profiles:
+          - verity-full
+          - verity-full,docker
     runs-on: ubuntu-latest
     steps:
       - name: Install cosign
@@ -40,7 +45,9 @@ jobs:
           #!/bin/sh
           mkosi genkey
       - name: Run mkosi
-        run: mkosi --debug
+        env:
+          profiles: ${{ matrix.profiles }}
+        run: mkosi --debug --profile="${profiles}"
       - name: List built artifacts
         run: find out/
       - name: Export image version for later steps
@@ -81,4 +88,4 @@ jobs:
             out/mangos_${{ env.IMAGE_VERSION }}.github.json
             out/mangos_${{ env.IMAGE_VERSION }}.spdx.json
             out/mangos_${{ env.IMAGE_VERSION }}.syft.json
-          name: mangos.disk
+          name: mangos.${{ matrix.profiles }}.disk
