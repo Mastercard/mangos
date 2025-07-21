@@ -89,7 +89,7 @@ jobs:
                   sleep 5
           done
           test $success -eq 1
-          mkosi ssh -- shutdown -h now
+          mkosi ssh -- shutdown -h now || true
           sleep 5
 
       - name: Remove symlinks
