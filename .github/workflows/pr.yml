@@ -1,0 +1,84 @@
+name: "Test PR"
+
+on:
+  - pull_request
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.9.1
+      - name: Prevent man-db dpkg trigger (speeds up setup-mkosi)
+        run: sudo sed '/man-db/ d' -i /var/lib/dpkg/triggers/File
+      - name: setup-mkosi
+        uses: sorenisanerd/mkosi@main
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dsaltares/fetch-gh-release-asset@master
+        id: tools-fetch
+        with:
+          repo: ${{ github.repository_owner }}/mangos-tools
+          version: latest
+          file: 'mangos\.tools_.*\.tar\.zst.*'
+          regex: true
+          target: 'dl/'
+      - name: Verify tools signature
+        env:
+          tag: ${{ steps.tools-fetch.outputs.version }}
+        run: |
+          cosign verify-blob  --bundle dl/mangos.tools_*.tar.zst.sigbundle \
+                              --certificate-identity "${{ github.server_url }}/${{ github.repository_owner }}/mangos-tools/.github/workflows/build.yml@refs/tags/${tag}" \
+                              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                              dl/mangos.tools_*.tar.zst
+      - name: Decompress and stage tools
+        run: mkdir mkosi.tools ; tar -x --zstd -f dl/mangos.tools_*.tar.zst -C mkosi.tools
+      - name: Generate key
+        run: |
+          #!/bin/sh
+          mkosi genkey
+      - name: Run mkosi
+        run: mkosi --debug
+      - name: List built artifacts
+        run: find out/
+      - name: Export image version for later steps
+        run: echo IMAGE_VERSION="$(./mkosi.version)" >> $GITHUB_ENV
+      - name: Test it
+        run: |
+          #!/bin/bash
+          set -x
+          set -e
+
+          screen -d -m -S vm mkosi vm -- -uuid $(uuidgen)
+
+          success=0
+          for try in {1..10}
+          do
+                  if mkosi ssh -- cat /etc/os-release
+                  then
+                          success=1
+                          break
+                  fi
+                  sleep 5
+          done
+          test $success -eq 1
+          mkosi ssh -- shutdown -h now
+          sleep 5
+
+      - name: Remove symlinks
+        run: find out/ -type l -delete
+      - name: Compress artifacts
+        run: for file in out/mangos_*.raw ; do zstd --rm "$file" ; done
+      - name: Upload build artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            out/mangos_${{ env.IMAGE_VERSION }}.raw.zst
+            out/mangos_${{ env.IMAGE_VERSION }}.cyclonedx.json
+            out/mangos_${{ env.IMAGE_VERSION }}.github.json
+            out/mangos_${{ env.IMAGE_VERSION }}.spdx.json
+            out/mangos_${{ env.IMAGE_VERSION }}.syft.json
+          name: mangos.disk
