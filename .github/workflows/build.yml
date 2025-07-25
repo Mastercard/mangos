@@ -18,7 +18,7 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.9.1
       - name: Prevent man-db dpkg trigger (speeds up setup-mkosi)
-        run: sudo sed '/man-db/ d' -i /var/lib/dpkg/triggers/File
+        run: sudo rm /var/lib/man-db/auto-update
       - name: setup-mkosi
         uses: sorenisanerd/mkosi@main
       - name: Checkout code
@@ -109,9 +109,28 @@ jobs:
             out/mangos_${{ env.IMAGE_VERSION }}.spdx.json
             out/mangos_${{ env.IMAGE_VERSION }}.syft.json
           name: mangos.${{ matrix.profiles }}.disk
-#      - name: Release
-#        if: github.ref_type == 'tag'
-#        uses: softprops/action-gh-release@v2
-#        with:
-#          draft: true
-#          files: out/*
+
+  release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Rename artifacts
+        run: |
+          mkdir release
+          mv artifacts/mangos.verity-full.disk/* release/
+          for f in artifacts/mangos.verity-full,docker.disk/* ; do
+            mv "$f" "release/mangos+docker_$(basename $f | cut -f2- -d_)"
+          done
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: release/*
