@@ -1,0 +1,2 @@
+#!/bin/sh
+echo MANGOS_GITHUB_URL="${MANGOS_GITHUB_URL}" >> ${BUILDROOT}/usr/lib/os-release

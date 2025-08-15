@@ -6,3 +6,5 @@
 /mkosi.key
 /build
 /pkg
+/mkosi.packages
+/gpg

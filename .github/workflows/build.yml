@@ -65,6 +65,7 @@ jobs:
       - name: Run mkosi
         env:
           profiles: ${{ matrix.profiles }}
+          MANGOS_GITHUB_URL: ${{ github.server_url }}/${{ github.repository }}
         run: mkosi --debug --profile="${profiles}"
       - name: List built artifacts
         run: find out/
@@ -76,7 +77,11 @@ jobs:
           set -x
           set -e
 
-          screen -d -m -S vm mkosi vm -- -uuid $(uuidgen)
+          # mkosi doesn't pick this up from the tools dir for some reason
+          sudo apt-get install -y ovmf
+
+          mkosi --debug vm -- -uuid $(uuidgen) > vm.log 2>&1 &
+          pid=$!
 
           success=0
           for try in {1..10}
@@ -88,14 +93,22 @@ jobs:
                   fi
                   sleep 5
           done
-          test $success -eq 1
+
+          if [ $success -eq 1 ]
+          then
+                  echo "mkosi ssh succeeded"
+          else
+                  echo "mkosi ssh failed"
+                  cat vm.log
+                  exit 1
+          fi
           mkosi ssh -- shutdown -h now || true
           sleep 5
 
       - name: Remove symlinks
         run: find out/ -type l -delete
       - name: Compress artifacts
-        run: for file in out/mangos_*.raw out/mangos_*.efi; do zstd --rm "$file" ; done
+        run: for file in out/mangos{,-installer}_*.raw out/mangos_*.efi; do zstd --rm "$file" ; done
       - name: Sign artifacts
         run: for file in out/mangos* ; do cosign sign-blob -d -y --bundle "${file}.sigbundle" "${file}" > /dev/null; done
       - name: Upload build artifact (disk)
@@ -113,6 +126,16 @@ jobs:
             out/mangos_${{ env.IMAGE_VERSION }}.spdx.json
             out/mangos_${{ env.IMAGE_VERSION }}.syft.json
           name: mangos.${{ matrix.profiles }}.disk
+      - name: Upload build artifact (installer)
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            out/mangos-installer_${{ env.IMAGE_VERSION }}.raw.zst
+            out/mangos-installer_${{ env.IMAGE_VERSION }}.cyclonedx.json
+            out/mangos-installer_${{ env.IMAGE_VERSION }}.github.json
+            out/mangos-installer_${{ env.IMAGE_VERSION }}.spdx.json
+            out/mangos-installer_${{ env.IMAGE_VERSION }}.syft.json
+          name: mangos.${{ matrix.profiles }}.installer
 
   release:
     if: github.ref_type == 'tag'
@@ -131,7 +154,7 @@ jobs:
           mkdir release
 
           mv artifacts/mangos.verity-full.disk/* release/
-
+          mv artifacts/mangos.verity-full.installer/* release/
           for f in artifacts/mangos.verity-full,docker.disk/* ; do
             mv "$f" "release/mangos+docker_$(basename $f | cut -f2- -d_)"
           done

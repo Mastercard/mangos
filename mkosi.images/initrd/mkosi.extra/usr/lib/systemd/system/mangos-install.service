@@ -1,0 +1,13 @@
+[Unit]
+Description=Install MANGOS
+Before=sysroot.mount
+ConditionPathExists=/etc/initrd-release
+ConditionKernelCommandLine=mangos_install_target
+SuccessAction=reboot-immediate
+OnFailure=emergency.target
+
+[Service]
+Type=oneshot
+StandardInput=tty-force
+ExecStartPre=systemctl --wait start systemd-networkd-wait-routable
+ExecStart=/usr/lib/mangos/mangos-install

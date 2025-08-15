@@ -1,0 +1,5 @@
+[Unit]
+Description=Let sysupdate pull stuff from Github
+
+[Service]
+ExecStart=/usr/bin/mangos-sd-gh-proxy

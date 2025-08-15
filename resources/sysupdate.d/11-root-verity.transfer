@@ -1,0 +1,18 @@
+[Transfer]
+ProtectVersion=%A
+
+[Source]
+Type=url-file
+Path=http://localhost:1002/
+MatchPattern=%M_@v.root-%a-verity.@u.raw \
+             %M_@v.root-%a-verity.@u.raw.gz \
+             %M_@v.root-%a-verity.@u.raw.zst \
+             %M_@v.root-%a-verity.@u.raw.xz
+
+[Target]
+Type=partition
+Path=auto
+MatchPattern=%M_@v_verity
+MatchPartitionType=root-verity
+PartitionFlags=0
+ReadOnly=1

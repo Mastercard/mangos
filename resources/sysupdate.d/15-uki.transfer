@@ -1,0 +1,20 @@
+[Transfer]
+ProtectVersion=%v
+
+[Source]
+Type=url-file
+Path=http://localhost:1002/
+MatchPattern=%M_@v.efi \
+             %M_@v.efi.zst
+
+[Target]
+Type=regular-file
+Path=/EFI/Linux
+PathRelativeTo=boot
+MatchPattern=%M_@v+@l-@d.efi \
+             %M_@v+@l.efi \
+             %M_@v.efi
+Mode=0644
+TriesLeft=3
+TriesDone=0
+InstancesMax=2

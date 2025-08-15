@@ -1,0 +1,41 @@
+#!/bin/sh
+
+echo=
+
+case "$1" in
+        -h|--help)
+                echo 'usage: mangos-install [BLOCK_DEVICE|ask]'
+                echo
+                echo 'Downloads and installs MANGOS onto BLOCK_DEVICE.'
+                echo
+                echo 'If called without arguments or with a single argument "ask",'
+                echo 'a dialog will be presented with a list of detected block devices.'
+                exit 0
+                ;;
+        -n|--dry-run)
+                echo="/bin/echo --"
+                shift
+                ;;
+esac
+
+install_target="${1:-ask}"
+
+if [ "${install_target}" = "ask" ]
+then
+        if ! lsblk -p -o TYPE,NAME,VENDOR,MODEL,SERIAL -l | grep ^disk | cut -f2- -d' ' | sed -e 's/ \+/ /g' | while read bdev info; do /bin/echo -e "$bdev\0$info\0" ; done | tr -d '\n' | xargs -0 whiptail --menu "Install target" 15 50 0 2> /tmp/mangos_install_target
+        then
+                echo "Install cancelled"
+                exit 1
+        fi
+        install_target="$(cat /tmp/mangos_install_target ; rm /tmp/mangos_install_target)"
+fi
+
+. /etc/os-release
+
+$echo /usr/lib/systemd/systemd-pull --force --verify=no --roothash=no --verity=no --direct raw ${MANGOS_GITHUB_URL}/releases/download/v${IMAGE_VERSION}/mangos_${IMAGE_VERSION}.raw.zst "$install_target"
+
+# There are two copies of the GPT on a block device. One at the start
+# and one at the end. Since the image and the device are unlikely to
+# be the exact same size, we need to put a new copy at the end.
+$echo sgdisk -e "${install_target}"
+
