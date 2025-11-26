@@ -258,21 +258,39 @@ chmod +x "${tmpdir}/is_ready.sh"
 
 # Exit status 130 means killed by signal 2 (SIGINT)
 step 'Waiting for installed OS to be ready'
-$systemd_run -u "mangos-test-${testid}-socat" -d -p SuccessExitStatus=130 -q --wait -- mkosi --debug sandbox -- socat VSOCK-LISTEN:23433,fork,socktype=5 EXEC:"${tmpdir}/is_ready.sh"
-report_outcome
+$systemd_run -u "mangos-test-${testid}-socat" -d -p SuccessExitStatus=130 -q --wait -- \
+    mkosi --debug sandbox -- socat VSOCK-LISTEN:23433,fork,socktype=5 EXEC:"${tmpdir}/is_ready.sh"
+
 
 step ssh into VM
+
 if $systemd_run -d --wait -q -p StandardOutput=journal -- ssh -i ./mkosi.key \
-    -o UserKnownHostsFile=/dev/null \
-    -o StrictHostKeyChecking=no \
-    -o LogLevel=ERROR \
-    -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
-    root@mkosi 'mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ; /usr/share/mangos/self_test.sh'
+        -o UserKnownHostsFile=/dev/null \
+        -o StrictHostKeyChecking=no \
+        -o LogLevel=ERROR \
+        -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
+        root@mkosi 'mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ; /usr/share/mangos/self_test.sh'
 then
     success
     $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} succeeded"
 else
     failure
     $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} failed"
+    exit 1
+fi
+
+step 'Testing LUKS recovery functionality'
+if $systemd_run -d --wait -q -p StandardOutput=journal -- ssh -i ./mkosi.key \
+        -o UserKnownHostsFile=/dev/null \
+        -o StrictHostKeyChecking=no \
+        -o LogLevel=ERROR \
+        -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
+        root@mkosi bash -s < ./recovery_test.sh
+then
+    success
+    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} succeeded"
+else
+    failure
+    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Recovery test failed"
     exit 1
 fi

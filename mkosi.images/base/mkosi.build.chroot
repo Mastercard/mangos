@@ -1,5 +1,4 @@
 #!/bin/sh
-set -x
 
 cp -r ${SRCDIR}/resources/mangosctl ${BUILDDIR}
 cd ${BUILDDIR}/mangosctl

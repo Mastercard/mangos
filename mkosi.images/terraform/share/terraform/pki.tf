@@ -264,6 +264,7 @@ resource "vault_cert_auth_backend_role" "node" {
       vault_policy.node-cert-self-renew.name,
       vault_policy.ssh-host-self-signer.name,
       vault_policy.consul-gossip.name,
+      vault_policy.node-recovery-keys.name,
     ]
 }
 
@@ -273,6 +274,22 @@ resource "vault_policy" "node-cert-self-renew" {
     policy = <<-EOP
         path "${vault_mount.pki-nodes.path}/sign/node-cert-self" {
             capabilities = ["update"]
+        }
+    EOP
+}
+
+resource "vault_policy" "node-recovery-keys" {
+    name = "node-recovery-keys"
+
+    policy = <<-EOP
+        # Allow nodes to create recovery keys for their own machine-id only (write-once, no read/update)
+        # No read allowed because node does not need to read its own recovery key,
+        #   it is only needed to be read by admins to recover the node
+        # No update allowed to avoid compromised node may update recovery key
+        #  Any update of recovery keys (even for rotating recovery keys) need admin actions
+        #  For which admin key should be used
+        path "secrets/mangos/recovery-keys/{{identity.entity.metadata.machine_id}}/*" {
+            capabilities = ["create"]
         }
     EOP
 }
