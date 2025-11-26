@@ -4,6 +4,7 @@ DEFAULT_REGION=global
 DEFAULT_DATACENTER=dc1
 
 set -e
+set -x
 
 usage() {
 	echo 'Usage: $0 [GLOBAL OPTIONS] {install|update|enroll}'
@@ -294,16 +295,22 @@ do_install() {
 	fi
 }
 
-# Generate recovery keys for encrypted partitions and store them in Vault
-generate_recovery_keys() {
+# Enroll recovery keys for encrypted partitions and store them in Vault
+enroll_recovery_keys() {
 	local vault_token="$1"
 	local machine_id="$(cat /etc/machine-id)"
 	local found_any=0
 
 	# Find all LUKS-encrypted partitions
-	while IFS= read -r device; do
-		local partlabel=$(lsblk -n -o PARTLABEL "$device" 2>/dev/null | tr -d ' ')
-		[ -z "$partlabel" ] && partlabel=$(basename "$device")
+	local devices=($(lsblk -ln -o NAME,TYPE,FSTYPE | awk '$2=="part" && $3=="crypto_LUKS" {print "/dev/"$1}'))
+
+	for device in "${devices[@]}"; do
+		local partlabel=$(lsblk -n -o PARTLABEL "$device" 2>/dev/null | tr -d ' \n\r\t')
+
+		# Skip if no valid partition label
+		if [ -z "$partlabel" ]; then
+			continue
+		fi
 
 		# Skip if recovery key already exists in Vault
 		if VAULT_TOKEN="${vault_token}" vault kv get "secrets/mangos/recovery-keys/${machine_id}/${partlabel}" >/dev/null 2>&1; then
@@ -313,24 +320,34 @@ generate_recovery_keys() {
 		found_any=1
 		step "Enrolling recovery key for ${partlabel}"
 
-		# Generate, enroll, and store recovery key
-		local recovery_key="$(systemd-id128 new)"
-		if echo -n "${recovery_key}" | systemd-cryptenroll "${device}" --recovery-key 2>/dev/null; then
-			if echo -n "${recovery_key}" | VAULT_TOKEN="${vault_token}" \
-				vault kv put "secrets/mangos/recovery-keys/${machine_id}/${partlabel}" \
-				key=- hostname="${HOSTNAME}" device="${device}" created="$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null; then
+		# Generate and enroll recovery key (systemd-cryptenroll generates and prints the key)
+		# Use TPM to unlock the device, then enroll a new recovery key
+		local output=$(systemd-cryptenroll "${device}" --recovery-key --unlock-tpm2-device=auto 2>&1)
+
+		# Extract recovery key - format: lowercase hex groups separated by dashes
+		# Example: etklvner-lblhnbgl-kdtnujtk-ikjlgbur-lnlrjrrc-iuikkidg-feientnn-dkjeeuft
+		local recovery_key=$(echo "$output" | grep -oE '[a-z]{8}(-[a-z]{8}){7}')
+
+		if [ -n "$recovery_key" ] && [[ "$recovery_key" =~ ^[a-z]{8}(-[a-z]{8}){7}$ ]]; then
+			VAULT_TOKEN="${vault_token}" vault kv put "secrets/mangos/recovery-keys/${machine_id}/${partlabel}" \
+				key="${recovery_key}" hostname="${HOSTNAME}" device="${device}" created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+			if [ $? -eq 0 ]; then
 				greenln Success
 			else
 				red "Failed to store in Vault"
 				echo
 			fi
 		else
-			red "Failed to enroll"
+			red "Failed to enroll or extract recovery key"
 			echo
 		fi
-	done < <(lsblk -ln -o NAME,TYPE,FSTYPE | awk '$2=="part" && $3=="crypto_LUKS" {print "/dev/"$1}')
+	done
 
-	[ $found_any -eq 0 ] && echo " > All recovery keys already enrolled"
+	if [ $found_any -eq 0 ]; then
+		echo " > All recovery keys already enrolled"
+	else
+		echo " > Recovery keys enrolled and stored in Vault"
+	fi
 }
 
 do_enroll() {
@@ -567,8 +584,7 @@ do_enroll() {
 
 	do_step "Reloading confexts" chronic systemd-confext refresh
 
-	# Generate and store recovery keys for encrypted partitions
-	generate_recovery_keys "$(vault read -field=token consul/creds/management)"
+	do_step "Enrolling recovery keys for encrypted partitions" enroll_recovery_keys "${NODE_VAULT_TOKEN}"
 }
 
 do_group() {
@@ -1012,8 +1028,7 @@ do_bootstrap() {
 	CONSUL_HTTP_TOKEN=${consul_mgmt_token} \
 	do_step "Final Terraform run" chronic run_terraform_apply
 
-	# Generate and store recovery keys for encrypted partitions
-	generate_recovery_keys "$(systemd-creds decrypt /var/lib/private/vault.root_token)"
+	do_step "Enrolling recovery keys for encrypted partitions" enroll_recovery_keys "$(systemd-creds decrypt /var/lib/private/vault.root_token)"
 }
 
 set_agent_token() {
