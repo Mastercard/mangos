@@ -294,6 +294,45 @@ do_install() {
 	fi
 }
 
+# Generate recovery keys for encrypted partitions and store them in Vault
+generate_recovery_keys() {
+	local vault_token="$1"
+	local machine_id="$(cat /etc/machine-id)"
+	local found_any=0
+
+	# Find all LUKS-encrypted partitions
+	while IFS= read -r device; do
+		local partlabel=$(lsblk -n -o PARTLABEL "$device" 2>/dev/null | tr -d ' ')
+		[ -z "$partlabel" ] && partlabel=$(basename "$device")
+
+		# Skip if recovery key already exists in Vault
+		if VAULT_TOKEN="${vault_token}" vault kv get "secrets/mangos/recovery-keys/${machine_id}/${partlabel}" >/dev/null 2>&1; then
+			continue
+		fi
+
+		found_any=1
+		step "Enrolling recovery key for ${partlabel}"
+
+		# Generate, enroll, and store recovery key
+		local recovery_key="$(systemd-id128 new)"
+		if echo -n "${recovery_key}" | systemd-cryptenroll "${device}" --recovery-key 2>/dev/null; then
+			if echo -n "${recovery_key}" | VAULT_TOKEN="${vault_token}" \
+				vault kv put "secrets/mangos/recovery-keys/${machine_id}/${partlabel}" \
+				key=- hostname="${HOSTNAME}" device="${device}" created="$(date -u +%Y-%m-%dT%H:%M:%SZ)" 2>/dev/null; then
+				greenln Success
+			else
+				red "Failed to store in Vault"
+				echo
+			fi
+		else
+			red "Failed to enroll"
+			echo
+		fi
+	done < <(lsblk -ln -o NAME,TYPE,FSTYPE | awk '$2=="part" && $3=="crypto_LUKS" {print "/dev/"$1}')
+
+	[ $found_any -eq 0 ] && echo " > All recovery keys already enrolled"
+}
+
 do_enroll() {
 	declare -A groups
 
@@ -527,6 +566,9 @@ do_enroll() {
 	greenln Success
 
 	do_step "Reloading confexts" chronic systemd-confext refresh
+
+	# Generate and store recovery keys for encrypted partitions
+	generate_recovery_keys "$(vault read -field=token consul/creds/management)"
 }
 
 do_group() {
@@ -969,6 +1011,9 @@ do_bootstrap() {
 	NOMAD_TOKEN="${nomad_mgmt_token}" \
 	CONSUL_HTTP_TOKEN=${consul_mgmt_token} \
 	do_step "Final Terraform run" chronic run_terraform_apply
+
+	# Generate and store recovery keys for encrypted partitions
+	generate_recovery_keys "$(systemd-creds decrypt /var/lib/private/vault.root_token)"
 }
 
 set_agent_token() {
