@@ -80,6 +80,7 @@ jobs:
           set -x
           set -e
 
+          sudo apt-get update -y
           # mkosi doesn't pick this up from the tools dir for some reason
           sudo apt-get install -y ovmf
           ./run_tests.sh
