@@ -1,5 +1,6 @@
 #!/bin/bash
 
+set -x
 VAULT_VERSION=${VAULT_VERSION:-latest}
 CONSUL_VERSION=${CONSUL_VERSION:-latest}
 NOMAD_VERSION=${NOMAD_VERSION:-latest}
@@ -18,7 +19,8 @@ download() {
         version=$(get_latest_version "$name")
     fi
 
-    version="${version#v}"
+    version="${version#v}"  # Remove leading 'v' if present
+    version="${version% *}" # sometimes version string gets extra characters with space
 
     origdir="$(pwd)"
     tmpdir=$(mktemp -d)
@@ -26,13 +28,13 @@ download() {
 
     local url="https://releases.hashicorp.com/${name}/${version}/${name}_${version}_linux_amd64.zip"
     local fname="${url##*/}"
-    wget -O "${fname}" "${url}"
+    wget --no-verbose -O "${fname}" "${url}"
 
     sha256sums=https://releases.hashicorp.com/${name}/${version}/${name}_${version}_SHA256SUMS
     sha256sums_sig=https://releases.hashicorp.com/${name}/${version}/${name}_${version}_SHA256SUMS.sig
 
-    wget -O SHA256SUMS "${sha256sums}"
-    wget -O SHA256SUMS.sig "${sha256sums_sig}"
+    wget --no-verbose -O SHA256SUMS "${sha256sums}"
+    wget --no-verbose -O SHA256SUMS.sig "${sha256sums_sig}"
 
     if ! gpg --verify --no-default-keyring --keyring ${origdir}/resources/hashicorp-signing-key.72D7468F.gpg SHA256SUMS.sig SHA256SUMS
     then
@@ -68,7 +70,7 @@ cni_plugins=https://github.com/containernetworking/plugins/releases/download/v1.
 
 if ! [ -e "$(basename $cni_plugins)" ]
 then
-    wget $cni_plugins
+    wget --no-verbose $cni_plugins
 fi
 
 if ! [ -d resources/cni ]

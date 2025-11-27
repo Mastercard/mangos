@@ -37,22 +37,28 @@ report_outcome() {
     fi
 }
 
-# Run a command with journalctl streaming
+# Run a command with journalctl streaming (controlled by VERBOSE)
 run_with_logs() {
     local unit_filter="$1"
     local header="$2"
     shift 2
 
-    echo
-    echo "$(bold "$header")"
-    journalctl --user -u "$unit_filter" -f --no-pager &
-    local journal_pid=$!
+    local journal_pid=""
+    
+    if [ -n "${VERBOSE}" ]; then
+        echo
+        echo "$(bold "$header")"
+        journalctl --user -u "$unit_filter" -f --no-pager &
+        journal_pid=$!
+    fi
 
     "$@"
     local result=$?
 
-    kill $journal_pid 2>/dev/null || true
-    wait $journal_pid 2>/dev/null || true
+    if [ -n "$journal_pid" ]; then
+        kill $journal_pid 2>/dev/null || true
+        wait $journal_pid 2>/dev/null || true
+    fi
 
     return $result
 }

@@ -4,7 +4,6 @@ DEFAULT_REGION=global
 DEFAULT_DATACENTER=dc1
 
 set -e
-set -x
 
 usage() {
 	echo 'Usage: $0 [GLOBAL OPTIONS] {install|update|enroll}'
@@ -302,10 +301,10 @@ enroll_recovery_keys() {
 	local found_any=0
 
 	# Find all LUKS-encrypted partitions
-	local devices=($(lsblk -ln -o NAME,TYPE,FSTYPE | awk '$2=="part" && $3=="crypto_LUKS" {print "/dev/"$1}'))
+	local devices=($(lsblk -ln -o NAME,TYPE,FSTYPE | awk '$2=="part" && $3=="crypto_LUKS" {print $1}'))
 
 	for device in "${devices[@]}"; do
-		local partlabel=$(lsblk -n -o PARTLABEL "$device" 2>/dev/null | tr -d ' \n\r\t')
+		local partlabel=$(lsblk -n -o PARTLABEL "/dev/$device" 2>/dev/null | tr -d ' \n\r\t')
 
 		# Skip if no valid partition label
 		if [ -z "$partlabel" ]; then

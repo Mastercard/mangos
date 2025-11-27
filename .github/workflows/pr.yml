@@ -75,6 +75,8 @@ jobs:
       - name: Export image version for later steps
         run: echo IMAGE_VERSION="$(./mkosi.version)" >> $GITHUB_ENV
       - name: Test it
+        env:
+          VERBOSE: "1"
         run: |
           #!/bin/bash
           set -x
