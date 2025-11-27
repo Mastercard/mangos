@@ -463,6 +463,11 @@ do_enroll() {
 	entity_name=$(vault write -field=name identity/lookup/entity alias_name=${HOSTNAME}.mangos alias_mount_accessor=${node_auth_accessor})
 	echo $entity_name
 
+	step "Setting machine-id as entity metadata"
+	machine_id=$(cat /etc/machine-id)
+	vault write identity/entity/name/${entity_name} metadata=machine_id="${machine_id}"
+	greenln Success
+
 	for group in ${!groups[@]}
 	do
 		do_step "Adding host to group '${group}'" chronic do_entity addgroup ${entity_name} ${group}
@@ -1028,7 +1033,11 @@ do_bootstrap() {
 	CONSUL_HTTP_TOKEN=${consul_mgmt_token} \
 	do_step "Final Terraform run" chronic run_terraform_apply
 
-	do_step "Enrolling recovery keys for encrypted partitions" enroll_recovery_keys "$(systemd-creds decrypt /var/lib/private/vault.root_token)"
+	echo
+	echo "Bootstrap complete! Next steps:"
+	echo "  1. Run: mangosctl sudo enroll -g vault-server -g consul-server -g nomad-server 127.0.0.1"
+	echo "  2. This will enroll the bootstrap node's identity and recovery keys"
+	echo
 }
 
 set_agent_token() {
