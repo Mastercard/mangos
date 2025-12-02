@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+set -x
 
 green() {
     echo -ne "\033[0;32m$*\033[0m"
@@ -34,6 +35,32 @@ report_outcome() {
     else
         failure
     fi
+}
+
+# Run a command with journalctl streaming (controlled by VERBOSE)
+run_with_logs() {
+    local unit_filter="$1"
+    local header="$2"
+    shift 2
+
+    local journal_pid=""
+    
+    if [ -n "${VERBOSE}" ]; then
+        echo
+        echo "$(bold "$header")"
+        journalctl --user -u "$unit_filter" -f --no-pager &
+        journal_pid=$!
+    fi
+
+    "$@"
+    local result=$?
+
+    if [ -n "$journal_pid" ]; then
+        kill $journal_pid 2>/dev/null || true
+        wait $journal_pid 2>/dev/null || true
+    fi
+
+    return $result
 }
 
 cols=120
@@ -246,21 +273,44 @@ chmod +x "${tmpdir}/is_ready.sh"
 
 # Exit status 130 means killed by signal 2 (SIGINT)
 step 'Waiting for installed OS to be ready'
-$systemd_run -u "mangos-test-${testid}-socat" -d -p SuccessExitStatus=130 -q --wait -- mkosi --debug sandbox -- socat VSOCK-LISTEN:23433,fork,socktype=5 EXEC:"${tmpdir}/is_ready.sh"
-report_outcome
+if run_with_logs "mangos-test-${testid}-qemu" "Boot messages:" \
+    $systemd_run -u "mangos-test-${testid}-socat" -d -p SuccessExitStatus=130 -q --wait -- \
+    mkosi --debug sandbox -- socat VSOCK-LISTEN:23433,fork,socktype=5 EXEC:"${tmpdir}/is_ready.sh"
+then
+    success
+else
+    failure
+fi
 
 step ssh into VM
-if $systemd_run -d --wait -q -p StandardOutput=journal -- ssh -i ./mkosi.key \
-    -o UserKnownHostsFile=/dev/null \
-    -o StrictHostKeyChecking=no \
-    -o LogLevel=ERROR \
-    -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
-    root@mkosi /usr/share/mangos/self_test.sh
+if run_with_logs "mangos-test-${testid}.slice" "Self-test output:" \
+    $systemd_run -d --wait -q -p StandardOutput=journal -- ssh -i ./mkosi.key \
+        -o UserKnownHostsFile=/dev/null \
+        -o StrictHostKeyChecking=no \
+        -o LogLevel=ERROR \
+        -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
+        root@mkosi /usr/share/mangos/self_test.sh
+then
+    success
+else
+    failure
+    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} failed"
+    exit 1
+fi
+
+step 'Testing LUKS recovery functionality'
+if run_with_logs "mangos-test-${testid}.slice" "Recovery test output:" \
+    $systemd_run -d --wait -q -p StandardOutput=journal -- ssh -i ./mkosi.key \
+        -o UserKnownHostsFile=/dev/null \
+        -o StrictHostKeyChecking=no \
+        -o LogLevel=ERROR \
+        -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
+        root@mkosi bash -s < ./recovery_test.sh
 then
     success
     $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} succeeded"
 else
     failure
-    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} failed"
+    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Recovery test failed"
     exit 1
 fi
