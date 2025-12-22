@@ -20,6 +20,7 @@ ExecStartPre=sh -c "(openssl x509 -in /var/lib/nomad/ssl/nomad.crt -subject -noo
 
 ExecStart=/usr/bin/nomad agent \
 	-config /usr/share/nomad \
+	-config /etc/nomad.d \
 	-config ${RUNTIME_DIRECTORY}/dc-region.json \
 	-config ${RUNTIME_DIRECTORY}/consul.json \
 	-config ${RUNTIME_DIRECTORY}/server.json
