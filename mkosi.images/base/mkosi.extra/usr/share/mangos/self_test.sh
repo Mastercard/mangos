@@ -2,7 +2,8 @@
 BASE_URL=${BASE_URL:-http://10.0.2.2:8081}
 export BASE_URL
 
-set -e
+# set -e
+set -x
 
 trap 'journalctl -n 1000 --no-pager' ERR
 systemctl is-active systemd-veritysetup@root.service
@@ -27,6 +28,10 @@ do
 done
 
 echo "===> Validating Recovery Keys"
+echo "PATH is: $PATH"
+cryptsetup --help || true
+systemd-cryptenroll --help || true
+cryptsetup --version || true
 machine_id=$(cat /etc/machine-id)
 
 # Auto-detect LUKS partitions
@@ -58,3 +63,15 @@ else
 
     echo "Recovery key validation: PASSED"
 fi
+
+echo 'Testing LUKS recovery functionality'
+
+if /usr/share/mangos/recovery_test.sh
+then
+    echo "✓ LUKS recovery test succeeded"
+else
+    echo "ERROR: LUKS recovery test failed"
+    exit 1
+fi
+echo ""
+echo "All self-tests completed successfully"

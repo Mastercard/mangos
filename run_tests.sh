@@ -278,19 +278,3 @@ else
     $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} failed"
     exit 1
 fi
-
-step 'Testing LUKS recovery functionality'
-if $systemd_run -d --wait -q -p StandardOutput=journal -- ssh -i ./mkosi.key \
-        -o UserKnownHostsFile=/dev/null \
-        -o StrictHostKeyChecking=no \
-        -o LogLevel=ERROR \
-        -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
-        root@mkosi bash -s < ./recovery_test.sh
-then
-    success
-    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} succeeded"
-else
-    failure
-    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Recovery test failed"
-    exit 1
-fi

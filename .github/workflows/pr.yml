@@ -69,8 +69,6 @@ jobs:
         run: ls out/
       - name: Export image version for later steps
         run: echo IMAGE_VERSION="$(./mkosi.version)" >> $GITHUB_ENV
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
       - name: Test it
         run: |
           #!/bin/bash
