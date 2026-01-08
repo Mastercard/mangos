@@ -69,12 +69,9 @@ jobs:
         run: ls out/
       - name: Export image version for later steps
         run: echo IMAGE_VERSION="$(./mkosi.version)" >> $GITHUB_ENV
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
       - name: Test it
         run: |
           #!/bin/bash
-          set -x
           set -e
           sudo apt-get update -y
           # mkosi doesn't pick this up from the tools dir for some reason
