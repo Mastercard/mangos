@@ -320,6 +320,95 @@ do_install() {
 	fi
 }
 
+# Enroll recovery keys for encrypted partitions and store them in Vault
+enroll_recovery_keys() {
+	local vault_token="$1"
+	local machine_id="$(cat /etc/machine-id)"
+	local found_any=0
+
+	local marker_dir="/var/lib/mangos/luks-recovery-keys-enrolled"
+	mkdir -p "${marker_dir}"
+
+	# Find all LUKS-encrypted partitions
+	local devices="$(lsblk -ln -o NAME,TYPE,FSTYPE | awk '$2=="part" && $3=="crypto_LUKS" {print "/dev/"$1}' | tr '\n' ' ')"
+
+	echo "> LUKS-encrypted devices found: $devices"
+
+	for device in ${devices}; do
+		echo "> Processing device: ${device}"
+		local partlabel="$(lsblk -n -o PARTLABEL "${device}" 2>/dev/null | tr -d ' \n\r\t')"
+
+		# Skip if no valid partition label
+		if [ -z "${partlabel}" ]; then
+			echo "> Device ${device} has no PARTLABEL, skipping"
+			continue
+		fi
+
+		# Skip if already enrolled
+		local marker_file="${marker_dir}/${partlabel}"
+		if [ -f "${marker_file}" ]; then
+			echo "> Recovery key for ${partlabel} already enrolled, skipping"
+			continue
+		fi
+
+		found_any=1
+		step "Enrolling recovery key for ${partlabel}"
+
+		# Generate and enroll recovery key (systemd-cryptenroll generates and prints the key)
+		# Use TPM to unlock the device, then enroll a new recovery key
+		local output=$(systemd-cryptenroll "${device}" --recovery-key --unlock-tpm2-device=auto 2>&1)
+
+		# Extract recovery key - format: 6 lowercase alphanumeric groups of 8, separated by dashes
+		# Example: etklvner-lblhnbgl-kdtnujtk-ikjlgbur-lnlrjrrc-iuikkidg-feientnn-dkjeeuft
+		LUKS_RECOVERY_KEY_REGEX='[a-z0-9]{8}(-[a-z0-9]{8}){7}'
+		local recovery_key="$(echo "$output" | grep -oE "${LUKS_RECOVERY_KEY_REGEX}" | head -n 1)"
+
+		if [ -n "${recovery_key}" ]; then
+			if VAULT_TOKEN="${vault_token}" vault kv put "secrets/mangos/recovery-keys/${machine_id}/${partlabel}" \
+				key="${recovery_key}" hostname="${HOSTNAME}" device="${device}" created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+			then
+				greenln Success
+				touch "${marker_file}"
+			else
+				red "Failed to store in Vault"
+			fi
+		else
+			red "Failed to extract recovery key. cryptenroll output:"
+			echo "${output}"
+		fi
+	done
+
+	if [ ${found_any} -eq 0 ]; then
+		echo "> All recovery keys already enrolled"
+	else
+		echo "> Recovery keys enrolled and stored in Vault"
+	fi
+}
+
+write_machine_id_metadata() {
+	step "Getting mount accessor for node-cert"
+	node_auth_accessor="$(vault read -field=accessor sys/auth/node-cert)"
+
+	step "Looking up entity name for this node"
+	entity_name="$(vault write -field=name identity/lookup/entity alias_name=${HOSTNAME}.mangos alias_mount_accessor=${node_auth_accessor})"
+
+	step "Setting machine-id as entity metadata"
+	machine_id="$(cat /etc/machine-id)"
+
+	# Read current metadata, merge with new machine_id, and write back
+	current_metadata="$(vault read -format=json identity/entity/name/${entity_name} | jq -r '.data.metadata // {}')"
+	new_metadata="$(echo "${current_metadata}" | jq --arg mid "${machine_id}" '. + {machine_id: $mid}')"
+
+	# Convert JSON to key=value arguments for Vault CLI
+	metadata_args=()
+	while IFS='=' read -r k v; do
+		metadata_args+=("metadata=${k}=${v}")
+	done < <(echo "${new_metadata}" | jq -r 'to_entries|map("\(.key)=\(.value|tostring)")|.[]')
+
+	vault write identity/entity/name/"${entity_name}" "${metadata_args[@]}"
+	greenln Success
+}
+
 do_enroll() {
 	declare -A groups
 
@@ -425,13 +514,7 @@ do_enroll() {
 	NODE_VAULT_TOKEN=$(vault login -method=cert -path=node-cert -client-cert=/var/lib/mangos/mangos.crt -client-key=<(systemd-creds decrypt ${confext_dir}/etc/credstore.encrypted/mangos.key) -token-only)
 	greenln Success
 
-	step "Getting mount accessor for node-cert"
-	node_auth_accessor=$(vault read -field=accessor sys/auth/node-cert)
-	echo $node_auth_accessor
-
-	step "Looking up entity name for this node"
-	entity_name=$(vault write -field=name identity/lookup/entity alias_name=${HOSTNAME}.mangos alias_mount_accessor=${node_auth_accessor})
-	echo $entity_name
+	do_step "Writing machine ID metadata to Vault" write_machine_id_metadata
 
 	for group in ${!groups[@]}
 	do
@@ -553,6 +636,8 @@ do_enroll() {
 	greenln Success
 
 	do_step "Reloading confexts" chronic systemd-confext refresh --mutable=auto
+
+	do_step "Enrolling recovery keys for encrypted partitions" enroll_recovery_keys "${NODE_VAULT_TOKEN}"
 }
 
 do_group() {
@@ -987,6 +1072,12 @@ do_bootstrap() {
 	NOMAD_TOKEN="${nomad_mgmt_token}" \
 	CONSUL_HTTP_TOKEN=${consul_mgmt_token} \
 	do_step "Final Terraform run" run_terraform_apply
+
+	echo
+	echo "Bootstrap complete! Next steps:"
+	echo "  1. Run: mangosctl sudo enroll -g vault-server -g consul-server -g nomad-server 127.0.0.1"
+	echo "  2. This will enroll the bootstrap node's identity and recovery keys"
+	echo
 }
 
 set_agent_token() {

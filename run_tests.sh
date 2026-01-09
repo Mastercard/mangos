@@ -258,21 +258,65 @@ chmod +x "${tmpdir}/is_ready.sh"
 
 # Exit status 130 means killed by signal 2 (SIGINT)
 step 'Waiting for installed OS to be ready'
-$systemd_run -u "mangos-test-${testid}-socat" -d -p SuccessExitStatus=130 -q --wait -- mkosi --debug sandbox -- socat VSOCK-LISTEN:23433,fork,socktype=5 EXEC:"${tmpdir}/is_ready.sh"
-report_outcome
+$systemd_run -u "mangos-test-${testid}-socat" -d -p SuccessExitStatus=130 -q --wait -- \
+    mkosi --debug sandbox -- socat VSOCK-LISTEN:23433,fork,socktype=5 EXEC:"${tmpdir}/is_ready.sh"
+
 
 step ssh into VM
-if $systemd_run -d --wait -q -p StandardOutput=journal -- ssh -i ./mkosi.key \
-    -o UserKnownHostsFile=/dev/null \
-    -o StrictHostKeyChecking=no \
-    -o LogLevel=ERROR \
-    -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p" \
-    root@mkosi 'mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ; /usr/share/mangos/self_test.sh'
-then
+
+# Stream the remote self-test live to the workflow console and also save to a logfile
+diag_ssh_out="${tmpdir}/self_test_ssh.out"
+echo "Streaming remote self-test output to ${diag_ssh_out}"
+
+# Use direct ssh (with forced tty) so output is streamed live. Save output with tee.
+# Run ssh+tee in background and tail the logfile in foreground so CI logs show live output
+ssh_cmd=(ssh -tt -i ./mkosi.key
+        -o UserKnownHostsFile=/dev/null
+        -o StrictHostKeyChecking=no
+        -o LogLevel=ERROR
+        -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p"
+        root@mkosi "bash -lc 'mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ; /usr/share/mangos/self_test.sh'")
+
+# Ensure diag file exists
+touch "${diag_ssh_out}"
+
+# Trap to clean child processes on exit
+cleanup_ssh_tail() {
+    if [ -n "${ssh_pid:-}" ]; then
+        kill "${ssh_pid}" 2>/dev/null || true
+    fi
+    if [ -n "${tail_pid:-}" ]; then
+        kill "${tail_pid}" 2>/dev/null || true
+    fi
+}
+trap cleanup_ssh_tail EXIT
+
+# Start ssh pipeline in background, using stdbuf to avoid buffering
+stdbuf -oL "${ssh_cmd[@]}" 2>&1 | stdbuf -oL tee "${diag_ssh_out}" &
+ssh_pid=$!
+
+# Give ssh/tee a moment to start writing, then tail the logfile to stream live output
+sleep 1
+tail -n +1 -f "${diag_ssh_out}" &
+tail_pid=$!
+
+# Wait for ssh to finish
+wait ${ssh_pid}
+ssh_rc=$?
+
+# Stop tailing
+kill ${tail_pid} 2>/dev/null || true
+wait ${tail_pid} 2>/dev/null || true
+
+trap - EXIT
+
+if [ ${ssh_rc} -eq 0 ]; then
     success
-    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} succeeded"
+    echo "Mangos test ${testid} succeeded" | $systemd_run -q -u "mangos-test-${testid}-result" -- cat
 else
     failure
-    $systemd_run -u "mangos-test-${testid}-result" -q -- echo "Mangos test ${testid} failed"
-    exit 1
+    echo "Mangos test ${testid} failed" | $systemd_run -q -u "mangos-test-${testid}-result" -- cat
+    echo "--- Tail of remote self-test output (last 200 lines) ---"
+    tail -n 200 "${diag_ssh_out}" || true
+    exit ${ssh_rc}
 fi
