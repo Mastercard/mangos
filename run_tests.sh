@@ -36,56 +36,114 @@ report_outcome() {
     fi
 }
 
+usage() {
+    cat << EOF
+Usage: ${0} [OPTIONS]
+
+Test Mangos build in a QEMU VM.
+
+Verifies:
+
+* Secure Boot enrollment,
+* base OS installation,
+* encrypted storage setup,
+* node authentication to Vault,
+* Consul DNS resolution,
+* running a docker container through Nomad,
+* issuing Consul and Vault tokens to Nomad workloads,
+* username/password authentication to Vault,
+* successful application of all Terraform code.
+
+OPTIONS:
+    -h, --help              Show this help message and exit
+    --test-id=ID            Specify a test ID (default: PID of $0)
+    --gui                   Enable GUI mode (default: headless)
+    --blockdev-type=TYPE    Specify block device type (virtio-blk-pci or nvme,
+                            default: virtio-blk-pci)
+    --no-self-test          Do not run self_test.sh after installation, only
+                            check that we can SSH in.
+    --no-asciinema          Disable asciinema recording (default: enabled if
+                            asciinema is installed)
+EOF
+}
+
 cols=120
 rows=40
-
-build=0
 testid=$$
-
+run_self_test=1
 asciinema_rec=()
+blockdev_type="virtio-blk-pci"
 
+set -x
 if which asciinema > /dev/null 2>&1
 then
         asciinema_rec=("asciinema" "rec" "--append" "--cols" "${cols}" "--rows" "${rows}" "mangos-${testid}.acast" "-c")
 fi
 
+GUI=0
 
-while [ $# -gt 0 ]
+if ! args="$(getopt -o '+h,B' --long 'help,no-build,build,test-id:,gui,blockdev-type:,no-self-test,no-asciinema' -n "${0}" -- "$@")"
+then
+	echo "Error parsing arguments" >&2
+	usage
+fi
+
+install_target="/dev/vdb"
+
+eval set -- "${args}"
+while true
 do
-    case "$1" in
-        --no-build)
-            build=0
-            shift
+	case "$1" in
+        -h|--help)
+            usage
+            exit 0
             ;;
-        --build)
-            build=1
-            shift
+        --blockdev-type)
+            case "$2" in
+                virtio-blk-pci)
+                    install_target=/dev/vdb
+                    ;;
+                nvme)
+                    install_target=/dev/nvme1n1
+                    ;;
+                *)
+                    echo "Invalid block device type: $2" >&2
+                    exit 1
+                    ;;
+            esac
+            blockdev_type="${2}"
+            shift 2
             ;;
         --test-id=)
-            testid="${1#--test-id=}"
-            shift
+            testid="${2}"
+            shift 2
             ;;
-        -B|--bump)
-            bumparg=-B
+        --gui)
+            GUI=1
             shift
             ;;
         --no-asciinema)
             asciinema_rec=()
             shift
             ;;
+        --no-self-test)
+            run_self_test=0
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "Error parsing arguments!" >&2
+            usage
+            exit 1
+            ;;
     esac
 done
 
-if [ "${build}" = 1 ]
-then
-    echo Building mangos
-    mkosi -f --profile=hashistack "${bumparg}"
-
-    echo Building installer
-    mkosi --profile=installer -f
-fi
-
 slice="mangos-test-${testid}.slice"
+
 systemd_run() {
     systemd-run --user --slice "${slice}" "$@"
 }
@@ -107,6 +165,8 @@ systemd_run -u "mangos-test-${testid}-serve" -q --working-directory "$(pwd)/dist
 report_outcome
 
 tmpdir="$(mktemp -d)"
+cleanup+=("rm -rf ${tmpdir:?}")
+
 cp /usr/share/OVMF/OVMF_VARS_4M.fd "${tmpdir}/efivars.fd"
 
 tpmdir="${tmpdir}/tpm"
@@ -143,30 +203,48 @@ systemd_run -q -d --wait -- mkosi sandbox -- qemu-img create "${target_disk}" 30
 report_outcome
 
 run() {
-    qemu_args=""
-    sdrun_args=""
+    blockdev_args=()
+    sdrun_args=()
+    smbios_args=()
     bootindex=1
 
-    while [ $# -gt 0 ]
+    if ! args="$(getopt -o 'P' --long 'blockdev-type:,blockdev:,wait,smbios:' -- "$@")"
+    then
+        echo "Error parsing arguments" >&2
+        exit 1
+    fi
+
+    eval set -- "${args}"
+
+    while true
     do
         case "$1" in
-            --blockdev=*)
-                # Example: --blockdev installer:/path/to/installer.raw
-
-                arg="${1#--blockdev=}"
+            --blockdev)
+                arg="${2}"
                 src="${arg#*:}"
                 id="${arg%%:*}"
-                qemu_args="${qemu_args}-blockdev driver=raw,node-name=${id},discard=unmap,file.driver=file,file.filename=${src},file.aio=io_uring,cache.direct=yes,cache.no-flush=yes -device virtio-blk-pci,drive=${id},serial=${id},bootindex=${bootindex} "
+                blockdev_args+=(
+                    -blockdev "driver=raw,node-name=${id},discard=unmap,file.driver=file,file.filename=${src},file.aio=io_uring,cache.direct=yes,cache.no-flush=yes"
+                    -device "${blockdev_type},drive=${id},serial=${id},bootindex=${bootindex}"
+                )
                 bootindex=$(( bootindex + 1 ))
-                shift
+                shift 2
                 ;;
             --wait|-P)
-                sdrun_args="${sdrun_args}$1 "
+                sdrun_args+=("$1")
                 shift
                 ;;
-            -smbios)
-                qemu_args="${qemu_args}$1 $2 "
+            --smbios)
+                smbios_args+=("-smbios" "$2")
                 shift 2
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                echo "Internal error! (${*})" >&2
+                exit 1
                 ;;
         esac
     done
@@ -178,52 +256,85 @@ run() {
     # Give swtpm a chance to start?
     sleep 3
 
-    script="${tmpdir}/script.sh"
-    cat <<-EOF > "${script}"
-#!/bin/sh
-mkosi sandbox -- \
-        qemu-system-x86_64 \
-        -no-reboot \
-        -machine type=q35,smm=on,hpet=off \
-        -smp 2 \
-        -m 4096M \
-        -object rng-random,filename=/dev/urandom,id=rng0 \
-        -device virtio-rng-pci,rng=rng0,id=rng-device0 \
-        -device virtio-balloon,free-page-reporting=on \
-        -no-user-config \
-        -nic user,model=virtio-net-pci \
-        -cpu host \
-        -accel kvm \
-        -nographic \
-        -nodefaults \
-        -chardev stdio,mux=on,id=console,signal=off \
-        -device virtio-serial-pci,id=mkosi-virtio-serial-pci \
-        -device virtconsole,chardev=console \
-        -mon console \
-        -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd \
-        -drive if=pflash,format=raw,file='${tmpdir}/efivars.fd' \
-        -global ICH9-LPC.disable_s3=1 \
-        -global driver=cfi.pflash01,property=secure,value=on \
-        -device virtio-scsi-pci,id=mkosi \
-        ${qemu_args} \
-        -chardev socket,id=chrtpm,path='${tmpdir}/swtpm-sock'  \
-        -tpmdev emulator,id=tpm0,chardev=chrtpm \
-        -device tpm-tis,tpmdev=tpm0 \
-        -uuid '${uuid}' \
-        -smbios type=11,value=io.systemd.credential.binary:firstboot.locale=Qy5VVEYtOA== \
-        -smbios type=11,value=io.systemd.credential.binary:firstboot.timezone=QW1lcmljYS9Mb3NfQW5nZWxlcw== \
-        -smbios type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=$(ssh-keygen -y -f mkosi.key | base64 -w 0) \
-        -smbios type=11,value=io.systemd.credential.binary:vmm.notify_socket=$(echo -n vsock:2:23433 | base64 -w 0)  \
-        -smbios type=11,value=io.systemd.stub.kernel-cmdline-extra='systemd.wants=network.target module_blacklist=vmw_vmci systemd.tty.term.hvc0=xterm-256color systemd.tty.columns.hvc0=${cols} systemd.tty.rows.hvc0=${rows} ip=enc0:any ip=enp0s1:any ip=enp0s2:any ip=host0:any ip=none loglevel=4 SYSTEMD_SULOGIN_FORCE=1 systemd.tty.term.console=xterm-256color systemd.tty.columns.console=${cols} systemd.tty.rows.console=${rows} console=hvc0 TERM=xterm-256color' \
-        -smbios type=11,value=io.systemd.boot.kernel-cmdline-extra='systemd.wants=network.target module_blacklist=vmw_vmci systemd.tty.term.hvc0=xterm-256color systemd.tty.columns.hvc0=${cols} systemd.tty.rows.hvc0=${rows} ip=enc0:any ip=enp0s1:any ip=enp0s2:any ip=host0:any ip=none loglevel=4 SYSTEMD_SULOGIN_FORCE=1 systemd.tty.term.console=xterm-256color systemd.tty.columns.console=${cols} systemd.tty.rows.console=${rows} console=hvc0 TERM=xterm-256color' \
+    # shellcheck disable=SC2054
+    qemu_cmd=(
+        mkosi box --
+        qemu-system-x86_64
+        -no-reboot
+        -machine type=q35,smm=on,hpet=off
+        -smp 2
+        -m 2048M
+        -object rng-random,filename=/dev/urandom,id=rng0
+        -device virtio-rng-pci,rng=rng0,id=rng-device0
+        -device virtio-balloon,free-page-reporting=on
+        -no-user-config
+        -nic user,model=virtio-net-pci
+        -cpu host
+        -accel kvm
         -device vhost-vsock-pci,guest-cid=42
-EOF
-    chmod +x "${script}"
+    )
+
+    cmdline_extra="systemd.wants=network.target module_blacklist=vmw_vmci systemd.tty.term.hvc0=xterm-256color systemd.tty.columns.hvc0=${cols} systemd.tty.rows.hvc0=${rows} ip=enc0:any ip=enp0s1:any ip=enp0s2:any ip=host0:any ip=none loglevel=4 SYSTEMD_SULOGIN_FORCE=1"
+
+    if [ "${GUI}" -eq 0 ]
+    then
+        cmdline_extra="${cmdline_extra} systemd.tty.term.console=xterm-256color systemd.tty.columns.console=${cols} systemd.tty.rows.console=${rows} console=hvc0 TERM=xterm-256color"
+        # shellcheck disable=SC2054
+        qemu_cmd+=(
+            -nographic
+            -nodefaults
+            -chardev stdio,mux=on,id=console,signal=off
+            -device virtio-serial-pci,id=mkosi-virtio-serial-pci
+            -device virtconsole,chardev=console
+            -mon console
+        )
+    else
+        # shellcheck disable=SC2054
+        qemu_cmd+=(
+            -device virtio-vga
+            -nodefaults
+            -display sdl,gl=on
+            -audio driver=pipewire,model=virtio
+        )
+    fi
+
+    # shellcheck disable=SC2054
+    qemu_cmd+=(
+        -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
+        -drive if=pflash,format=raw,file="${tmpdir}/efivars.fd"
+        -global ICH9-LPC.disable_s3=1
+        -global driver=cfi.pflash01,property=secure,value=on
+        -device virtio-scsi-pci,id=mkosi
+    )
+
+    qemu_cmd+=("${blockdev_args[@]}")
+
+    # shellcheck disable=SC2054
+    qemu_cmd+=(
+        -chardev "socket,id=chrtpm,path=${tmpdir}/swtpm-sock"
+        -tpmdev emulator,id=tpm0,chardev=chrtpm
+        -device tpm-tis,tpmdev=tpm0
+        -uuid "${uuid}"
+        -smbios type=11,value=io.systemd.credential.binary:firstboot.locale=Qy5VVEYtOA==
+        -smbios type=11,value=io.systemd.credential.binary:firstboot.timezone=QW1lcmljYS9Mb3NfQW5nZWxlcw==
+        -smbios type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root="$(ssh-keygen -y -f mkosi.key | base64 -w 0)"
+        -smbios type=11,value=io.systemd.credential.binary:vmm.notify_socket="$(echo -n vsock:2:23433 | base64 -w 0)"
+        -smbios type=11,value=io.systemd.stub.kernel-cmdline-extra="${cmdline_extra}"
+        -smbios type=11,value=io.systemd.boot.kernel-cmdline-extra="${cmdline_extra}"
+        "${smbios_args[@]}"
+    )
+
+    printf '#!/bin/bash\n' > "${tmpdir}/qemu_cmd.sh"
+    printf '%q ' "${qemu_cmd[@]}" >> "${tmpdir}/qemu_cmd.sh"
+    chmod +x "${tmpdir}/qemu_cmd.sh"
+    ls -l "${tmpdir}/qemu_cmd.sh"
+    cat "${tmpdir}/qemu_cmd.sh"
 
     # sdrun_args may contain multiple arguments, so it needs to NOT be quoted
     # shellcheck disable=SC2086
-    systemd_run -u "mangos-test-${testid}-qemu" -q -d --setenv={XAUTHORITY,DISPLAY,WAYLAND_DISPLAY} -E TERM=xterm-256color ${sdrun_args} -- \
-        "${asciinema_rec[@]}" "${script}"
+    systemd_run -u "mangos-test-${testid}-qemu" -q -d --setenv={XAUTHORITY,DISPLAY,WAYLAND_DISPLAY} -E TERM=xterm-256color "${sdrun_args[@]}" -- \
+        "${asciinema_rec[@]}" "${tmpdir}/qemu_cmd.sh"
+
     sleep 2
 }
 
@@ -235,18 +346,17 @@ run --blockdev=installer:"${installer}" \
     --blockdev=persistent:"${target_disk}" --wait
 report_outcome
 
-# Submitted upstream: https://gitlab.com/kraxel/virt-firmware/-/merge_requests/30
-mkosi box -- patch -N mkosi.tools/usr/lib/python3/dist-packages/virt/firmware/vars.py virt-firmware.patch || true
-
-mkosi box -- virt-fw-vars --inplace "${tmpdir}/efivars.fd" --append-boot-filepath "EFI/Linux/mangos_${IMAGE_VERSION}.efi @1 "
+step 'Verify Secure Boot is enabled'
+mkosi box -- virt-fw-vars -i "${tmpdir}/efivars.fd" --output-json - | jq -e '.variables[] | select(.name=="SecureBootEnable") | .data=="01"'
+report_outcome
 
 varsjson="$(mktemp)"
-
-mkosi box -- virt-fw-vars -i "${tmpdir}/efivars.fd" --output-json - 2> /dev/null | jq '{variables:[.variables as $vars | $vars[] | select(.name=="BootOrder") as $BootOrder | $BootOrder + {data:($vars[] | select(.data | test("'"$(echo -n mangos | iconv -f ascii -t UCS2 | xxd -p)"'")) | .name | capture("(?<num>..)$") | (.num + "00" + $BootOrder.data))}]}' > "${varsjson}"
+jq -n '{variables:[{name:"LoaderEntryOneShot",guid:"4a67b082-0a4c-41cf-b6c7-440b29bb8c4f",attr:7,data:"'"$(echo "mangos_${IMAGE_VERSION}.efi@install" | tr -d '\n' | iconv -f utf-8 -t UCS2 | xxd -p | tr -d '\n' | tr 'a-f' 'A-F')"'0000"}]}' > "${varsjson}"
 mkosi box -- virt-fw-vars --inplace "${tmpdir}/efivars.fd" --set-json "${varsjson}"
+rm "${varsjson}"
 
 step 'Run VM (install mangos)'
-run -smbios type=11,value=io.systemd.credential:mangos_install_target=/dev/vdb \
+run --smbios "type=11,value=io.systemd.credential:mangos_install_target=${install_target}" \
     --blockdev=installer:"${installer}" \
     --blockdev=persistent:"${target_disk}" --wait
 report_outcome
@@ -282,7 +392,7 @@ ssh_cmd=(ssh -tt -i ./mkosi.key
         -o StrictHostKeyChecking=no
         -o LogLevel=ERROR
         -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p"
-        root@mkosi "bash -lc 'stdbuf -oL mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ; stdbuf -oL /usr/share/mangos/self_test.sh'")
+        root@mkosi "if [ ${run_self_test} -eq 0 ]; then echo Skipping self test; exit 0 ; fi ; bash -lc 'stdbuf -oL mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ;  stdbuf -oL /usr/share/mangos/self_test.sh'")
 
 # Run ssh in the foreground and stream directly to this process's stdout
 stdbuf -oL "${ssh_cmd[@]}" 2>&1
