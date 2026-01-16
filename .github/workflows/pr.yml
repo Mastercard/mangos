@@ -73,6 +73,8 @@ jobs:
         run: echo IMAGE_VERSION="$(./mkosi.version)" >> $GITHUB_ENV
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
+      - name: Install asciinema
+        run: sudo apt-get install -y asciinema
       - name: Test it
         run: |
           #!/bin/bash
@@ -94,6 +96,13 @@ jobs:
           done
 #      - name: Sign artifacts
 #        run: for file in out/mangos* ; do cosign sign-blob -d -y --bundle "${file}.sigbundle" "${file}" > /dev/null; done
+      - name: Upload asciinema cast files
+        id: upload-acast
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: acast
+          path: mangos-*.acast
       - name: Upload build artifact (disk)
         id: upload-disk
         uses: actions/upload-artifact@v4

@@ -38,7 +38,7 @@ install_target="${install_target:-ask}"
 
 if [ "${install_target}" = "ask" ]
 then
-        if ! lsblk -p -o TYPE,NAME,SIZE,VENDOR,MODEL,SERIAL -l | grep ^disk | cut -f2- -d' ' | sed -e 's/ \+/ /g' | while read bdev info; do /bin/echo -e "$bdev\x00$info\x00" ; done | tr -d '\n' | xargs -0 whiptail --menu "Install target" 15 50 0 2> /tmp/mangos_install_target
+        if ! lsblk -p -o TYPE,NAME,SIZE,VENDOR,MODEL,SERIAL -l | grep ^disk | cut -f2- -d' ' | sed -e 's/ \+/ /g' | while read -r bdev info; do /bin/echo -e "${bdev}\x00${info}\x00" ; done | tr -d '\n' | xargs -0 whiptail --menu "Install target" 15 50 0 2> /tmp/mangos_install_target
         then
                 echo "Install cancelled"
                 exit 1
@@ -48,50 +48,66 @@ fi
 
 # Get the partition UUID for the ESP we booted from. Set by the
 # kernel EFI stub.
+# shellcheck disable=SC2002
 boot_uuid="$(cat /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f | tail -c +5 | head -c 72 | iconv -f UCS2 -t UTF-8)"
 
 # Mount it at /boot
 mkdir /boot
-mount /dev/disk/by-partuuid/${boot_uuid@L} /boot
+mount "/dev/disk/by-partuuid/${boot_uuid@L}" /boot
 
 # Apply the partition table to the target device.
-$echo systemd-repart --dry-run=no --empty=force --defer-partitions=swap,tmp,var --root=/ --definitions=/usr/lib/repart.d "${install_target}"
+${echo} systemd-repart --dry-run=no --empty=force --defer-partitions=swap,tmp,var --root=/ --definitions=/usr/lib/repart.d "${install_target}"
 
 # It would be neat if we coould use sd-sysypdate for the root partition, too,
 # but if there's not existing root partition on its target device, it bails.
 # Hence, we use systemd-pull to handle the root image.
 rootimg="$(ls /boot/imgs/mangos_*.root-x86-64.*.raw.zst)"
-$echo /usr/lib/systemd/systemd-pull --force --verify=no --roothash=no --verity=no --direct raw file://${rootimg} "${install_target}5"
+
+partition_device_name() {
+	bdev=$1
+	partno=$2
+	case "${bdev}" in
+		/dev/nvme*|/dev/mmcblk*)
+			printf "%sp%d" "${bdev}" "${partno}"
+			;;
+		*)
+			printf "%s%d" "${bdev}" "${partno}"
+			;;
+	esac
+}
+
+${echo} /usr/lib/systemd/systemd-pull --force --verify=no --roothash=no --verity=no --direct raw "file://${rootimg}" "$(partition_device_name "${install_target}" 5)"
 
 # Extract partition UUID and set partition name from the filename.
-partuuid="$(basename ${rootimg##*.root-x86-64.} .raw.zst)"
+partuuid="$(basename "${rootimg##*.root-x86-64.}" .raw.zst)"
 partname="${rootimg##*/}"
 partname="${partname%.*.*.*.*}"
 
 # Apply it to the partition.
-$echo sgdisk -u "5:${partuuid}" -c "5:${partname}" ${install_target}
+${echo} sgdisk -u "5:${partuuid}" -c "5:${partname}" "${install_target}"
 
 # Now let sysupdate handle the other partitions.
-$echo /usr/lib/systemd/systemd-sysupdate --definitions=/usr/share/mangos-install/sysupdate.local.d/ --image="${install_target}" --transfer-source=/boot/imgs update
+${echo} /usr/lib/systemd/systemd-sysupdate --definitions=/usr/share/mangos-install/sysupdate.local.d/ --image="${install_target}" --transfer-source=/boot/imgs update
 
-busybox partprobe ${install_target}
+busybox udevadm settle
+busybox partprobe "${install_target}"
 
-mount "${install_target}5" /mnt
-mount "${install_target}1" /mnt/boot
+mount "$(partition_device_name "${install_target}" 5)" /mnt
+mount "$(partition_device_name "${install_target}" 1)" /mnt/boot
 
 tmpfile=$(mktemp)
 
 # bootctl insists on writing to /etc/kernel/entry-token, so we
-mount -o bind $tmpfile /mnt/etc/kernel/entry-token
+mount -o bind "${tmpfile}" /mnt/etc/kernel/entry-token
 
 # so that we can
-$echo bootctl install --variables=yes --root=/mnt
+${echo} bootctl install --variables=yes --root=/mnt
 
 # and then we just
 umount /mnt/etc/kernel/entry-token
-    
+
 # but now `bootctl install` has overwritten our signed bootloder,
-# so we put it right back by 
+# so we put it right back by
 cp /boot/EFI/BOOT/BOOTX64.EFI /mnt/boot/EFI/BOOT/BOOTX64.EFI
 cp /boot/EFI/BOOT/BOOTX64.EFI /mnt/boot/EFI/systemd/systemd-bootx64.efi
 
@@ -102,7 +118,7 @@ then
 
     sed -e "s%^.*linux .*%& ${ip_arg} ${nameserver_arg}%g" -i /mnt/boot/grub/grub.cfg
 
-    $echo /usr/lib/systemd/systemd-pull --force --verify=no --roothash=no --verity=no --direct raw /imgs/*.grub.raw "${install_target}"
+    ${echo} /usr/lib/systemd/systemd-pull --force --verify=no --roothash=no --verity=no --direct raw /imgs/*.grub.raw "${install_target}"
 fi
 
 umount /mnt/boot
