@@ -64,8 +64,12 @@ resource "consul_config_entry_service_intentions" "consul" {
 
 resource "nomad_job" "consul" {
   jobspec = file("${path.module}/consul.nomad")
+  hcl2 {
+    vars = {
+      namespace = nomad_namespace.admin.name
+    }
+  }
   depends_on = [
-    nomad_namespace.admin,
     vault_consul_secret_backend_role.consul-api,
     vault_jwt_auth_backend_role.consul,
     consul_acl_binding_rule.consul-service,
