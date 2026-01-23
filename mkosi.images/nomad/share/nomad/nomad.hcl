@@ -30,6 +30,23 @@ client {
   enabled                     = true
   bridge_network_hairpin_mode = true
 
+  # During testing (in Github Actions), we're several levels deep:
+  # Azure host (wholly unavailable to us, but listed for completeness)
+  # Azure VM / Github Action runner VM (I *think* these are one and the same)
+  # Mangos test VM
+  # Container inside Mangos test VM
+  #
+  # We use ${attr.unique.network.ip-address} to the the host's IP address.
+  # This generally works, but cloud provider fingerprinting logic in Nomad
+  # overrides this with the detected cloud provider IP address, i.e. the IP
+  # address of the Azure VM.
+  #
+  # To avoid this, we disable all cloud provider fingerprinting. If we need
+  # to undo this, find a different way to determine the IP.
+  options = {
+    "fingerprint.denylist" = "env_aws,env_gce,env_azure,env_digitalocean"
+  }
+
   host_network "default" {
     cidr = "{{ GetDefaultInterfaces | exclude \"type\" \"IPv6\" | attr \"string\" }}"
   }
