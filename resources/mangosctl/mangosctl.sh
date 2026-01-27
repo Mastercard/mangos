@@ -1054,6 +1054,8 @@ do_bootstrap() {
 		-p "Type=notify" \
 		-p "StateDirectory=nomad/data nomad/ssl" \
 		-p "Conflicts=nomad.service" \
+		-p "Requires=containerd.service docker.service" \
+		-p "After=containerd.service docker.service" \
 		/usr/bin/nomad agent -server -bootstrap-expect=1 \
 			-config=/usr/share/nomad \
 			-config=/run/nomad/consul-agent.json \
