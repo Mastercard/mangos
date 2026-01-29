@@ -34,6 +34,27 @@ client {
     cidr = "{{ GetDefaultInterfaces | exclude \"type\" \"IPv6\" | attr \"string\" }}"
   }
 
+  host_volume "host-etc" {
+    path      = "/etc"
+    read_only = true
+  }
+
+  host_volume "host-proc" {
+    path      = "/proc"
+    read_only = true
+  }
+
+  host_volume "containerd" {
+    path = "/run/containerd/containerd.sock"
+    # Nothing has needed r/w access yet
+    read_only = true
+  }
+
+  host_volume "kernel-debug" {
+    path      = "/sys/kernel/debug"
+    read_only = true
+  }
+
   host_volume "ca-certificates" {
     path      = "/etc/ssl/certs"
     read_only = true
@@ -44,9 +65,39 @@ client {
     read_only = false
   }
 
+  host_volume "journal" {
+    path      = "/var/log/journal"
+    read_only = true
+  }
+
   host_volume "localtime" {
     path      = "/etc/localtime"
     read_only = true
+  }
+}
+
+plugin "docker" {
+  config {
+    allow_caps = [
+      "audit_write",
+      "chown",
+      "dac_override",
+      "fowner",
+      "fsetid",
+      "kill",
+      "mknod",
+      "net_bind_service",
+      "setfcap",
+      "setgid",
+      "setpcap",
+      "setuid",
+      "sys_chroot",
+      "sys_admin",
+      "sys_ptrace",
+      "sys_resource"
+    ]
+
+    extra_labels = ["*"]
   }
 }
 

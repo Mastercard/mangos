@@ -2,7 +2,8 @@
 Description=Nomad
 Documentation=https://www.nomadproject.io/docs/
 Wants=network-online.target consul.service modprobe@bridge.service
-After=network-online.target consul.service modprobe@bridge.service
+Requires=containerd.service docker.service
+After=network-online.target docker.service containerd.service consul.service modprobe@bridge.service
 
 [Service]
 User=root
