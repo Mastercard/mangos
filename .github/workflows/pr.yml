@@ -110,13 +110,13 @@ jobs:
           done
 #      - name: Sign artifacts
 #        run: for file in out/mangos* ; do cosign sign-blob -d -y --bundle "${file}.sigbundle" "${file}" > /dev/null; done
-      - name: Upload asciinema cast files
-        id: upload-acast
+      - name: Upload debug logs
+        id: upload-debug-logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: acast
-          path: mangos-*.acast
+          name: debug-logs
+          path: debug_logs/*
       - name: Upload build artifact (disk)
         id: upload-disk
         uses: actions/upload-artifact@v4

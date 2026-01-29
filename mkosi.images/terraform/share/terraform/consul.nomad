@@ -1,20 +1,32 @@
+variable "namespace" {
+  type = string
+}
+
 job "consul" {
-  namespace = "admin"
+  namespace = var.namespace
 
   group "client" {
     service {
-      tags = ["api"]
-      name = "consul"
-      port = "http"
+      tags         = ["api"]
+      name         = "consul"
+      port         = "http"
+      address_mode = "alloc"
       connect {
         sidecar_service {}
       }
     }
 
+    service {
+      tags         = ["dns"]
+      name         = "consul"
+      port         = "dns"
+      address_mode = "host"
+    }
+
     network {
       mode = "bridge"
       port "http" {
-        static = 8500
+        to = 8500
       }
       port "dns" {
         static       = 8600
@@ -32,12 +44,12 @@ job "consul" {
       consul {}
 
       template {
-        data = <<-EOF
+        data        = <<-EOF
         encrypt   = "{{ with secret "secrets/mangos/consul/gossip" }}{{ .Data.encryption_key | trimSpace }}{{ end }}"
-        node_name = "consul-api-{{ env "NOMAD_SHORT_ALLOC_ID" }}"
         addresses {
           dns = "0.0.0.0"
         }
+        node_name = "consul-api-{{ env "NOMAD_SHORT_ALLOC_ID" }}"
         acl {
           enabled = true
           tokens {
@@ -52,13 +64,21 @@ job "consul" {
         destination = "${NOMAD_SECRETS_DIR}/consul.hcl"
         change_mode = "restart"
       }
+
       driver = "docker"
+
+      env {
+        HOST_IP = "${attr.unique.network.ip-address}"
+      }
+
       config {
         image = "hashicorp/consul"
-        args  = ["agent",
-                 "-retry-join", "10.0.2.15",
-                 "-datacenter", "${NOMAD_REGION}-${NOMAD_DC}",
-                 "-config-file", "${NOMAD_SECRETS_DIR}/consul.hcl"]
+        args = [
+          "agent",
+          "-retry-join", "${HOST_IP}",
+          "-datacenter", "${NOMAD_REGION}-${NOMAD_DC}",
+          "-config-file", "${NOMAD_SECRETS_DIR}/consul.hcl"
+        ]
       }
     }
   }

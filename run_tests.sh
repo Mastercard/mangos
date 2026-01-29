@@ -392,11 +392,17 @@ ssh_cmd=(ssh -tt -i ./mkosi.key
         -o StrictHostKeyChecking=no
         -o LogLevel=ERROR
         -o ProxyCommand="mkosi sandbox -- socat - VSOCK-CONNECT:42:%p"
-        root@mkosi "if [ ${run_self_test} -eq 0 ]; then echo Skipping self test; exit 0 ; fi ; bash -lc 'stdbuf -oL mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ;  stdbuf -oL /usr/share/mangos/self_test.sh'")
+        root@mkosi)
+
+set +e
 
 # Run ssh in the foreground and stream directly to this process's stdout
-stdbuf -oL "${ssh_cmd[@]}" 2>&1
+stdbuf -oL "${ssh_cmd[@]}" "if [ ${run_self_test} -eq 0 ]; then echo Skipping self test; exit 0 ; fi ; bash -lc 'stdbuf -oL mangosctl --base-url=http://10.0.2.2:8081 updatectl add-overrides ;  stdbuf -oL /usr/share/mangos/self_test.sh'" 2>&1
 ssh_rc=$?
+
+mkdir debug_logs
+mv ./*.acast debug_logs/ 2>/dev/null || true
+"${ssh_cmd[@]}" "cd /var/lib/nomad/data ; tar czf /tmp/nomad_logs.tar.gz ./alloc/*/alloc/logs/*.std*.* ; base64 /tmp/nomad_logs.tar.gz" | base64 > "debug_logs/nomad_alloc_logs.${testid}.tar.gz.base64" || true
 
 if [ ${ssh_rc} -eq 0 ]; then
     success
