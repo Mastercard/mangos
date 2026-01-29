@@ -8,6 +8,7 @@ After=network-online.target docker.service containerd.service consul.service mod
 [Service]
 User=root
 Group=root
+Type=notify-reload
 RuntimeDirectory=nomad
 RuntimeDirectoryMode=0700
 
