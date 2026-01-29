@@ -160,11 +160,11 @@ variable "nomad-vault-max-lease-ttl" {
 variable "nomad-vault-max-ttl" {
   description = "The max TTL (in seconds) for the Vault Nomad backend"
   type        = string
-  default     = "240"
+  default     = "600"
 }
 
 variable "nomad-vault-ttl" {
   description = "The TTL (in seconds) for the Vault Nomad backend"
   type        = string
-  default     = "120"
+  default     = "240"
 }
