@@ -17,6 +17,9 @@ EOF
 
 mangosctl bootstrap
 mangosctl sudo enroll -g{vault-server,{nomad,consul}-{server,client}}s 127.0.0.1
+ip addr
+ip link
+mangosctl sudo -- nomad node status -self -json
 mangosctl sudo -- nomad job run /usr/share/mangos/test.nomad
 
 env VAULT_ADDR=https://127.0.0.1:8200/ \
